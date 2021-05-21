@@ -5,6 +5,8 @@ from selenium import webdriver
 from selenium.common.exceptions import TimeoutException
 import re
 from datetime import datetime, timedelta
+from selenium.common.exceptions import NoSuchElementException
+import os
 
 pages_searched = 0
     
@@ -18,15 +20,24 @@ driver.get(url)
 # get the DataFrame ready to capture results from the job search
 df = search_page.get_dataframe_ready()
 
+print('\nCheck the webpage for a CAPTCHA. Once you finish the CAPTCHA or if there is not one, answer the question below:')
+continue_search = input('Start the job search? y/n: ')
+if continue_search.lower() == 'n':
+    search_page.continue_searching('n', driver, df)
+else:
+    pass
+
 while pages_searched < pages_to_search:
     
+    # prints starting page
+    search_page.starting_page(pages_searched + 1)
+
     # checks to see if web page has loaded the right page; if it hasn't, then it's likely a CAPTCHA; it will prompt you to continue
-    time.sleep(3)
     try: 
         job_listing = driver.find_elements_by_class_name('title')
         print('\tFound job listings...')
     except Exception:
-        should_continue = input('Should I continue? Y/N')
+        should_continue = input('Unable to find a job listing. Should I continue? Y/N')
         search_page.continue_searching(should_continue, driver, df)
 
     # check for email form on page; if present, then it closes the form (only checks after page 1)
@@ -38,9 +49,6 @@ while pages_searched < pages_to_search:
     except TimeoutException:
         pass
     
-    # prints starting page
-    search_page.starting_page(pages_searched + 1)
-    
     # set job selection on page to 0 for each web page
     current_listing = 0
 
@@ -50,43 +58,87 @@ while pages_searched < pages_to_search:
         # find first listing
         try:
             driver.find_elements_by_class_name('title')[current_listing].click()
-            print('\tFound job listing and starting to retrieve info...')
+            print(f'\tFound job listing #{current_listing + 1} and starting to retrieve info...', end='')
         except Exception:
-            should_continue = input('Should I continue? Y/N')
-            search_page.continue_searching(should_continue, driver, df)
+            try:
+                time.sleep(3)
+                driver.find_elements_by_class_name('title')[current_listing].click()
+                print(f'\tFound job listing #{current_listing + 1} and starting to retrieve info...')
+            except Exception:  
+                should_continue = input('Unable to find job listings. Should I continue? Y/N')
+                search_page.continue_searching(should_continue, driver, df)
             
         # wait for iframe to load (this contains the job details)
-        time.sleep(2)
+        time.sleep(1)
 
         # Get URL for the job posting from iframe
-        URL = driver.find_element_by_xpath('//*[@id="vjs-container-iframe"]').get_attribute('src')
+        try:
+            URL = driver.find_element_by_xpath('//*[@id="vjs-container-iframe"]').get_attribute('src')
+        except Exception:
+            try:
+                time.sleep(3)
+                URL = driver.find_element_by_xpath('//*[@id="vjs-container-iframe"]').get_attribute('src')
+            except Exception:
+                should_continue = input('Unable to find URL. Should I continue? Y/N')
+                search_page.continue_searching(should_continue, driver, df)
+
         
         # get locations
-        job_location = driver.find_elements_by_class_name('location')[current_listing].text
+        try:
+            job_location = driver.find_elements_by_class_name('location')[current_listing].text
+        except Exception:
+            should_continue = input('Unable to find location. Should I continue? Y/N')
+            search_page.continue_searching(should_continue, driver, df)
+            job_location = 'not listed'
         
         # switch to the iframe
-        iframe = driver.find_elements_by_id('vjs-container-iframe')
-        driver.switch_to.frame(iframe[0])
+        try:
+            iframe = driver.find_elements_by_id('vjs-container-iframe')
+            driver.switch_to.frame(iframe[0])
+        except Exception:
+            try:
+                time.sleep(3)
+                iframe = driver.find_elements_by_id('vjs-container-iframe')
+                driver.switch_to.frame(iframe[0])
+            except Exception:
+                should_continue = input('Unable to find location. Should I continue? Y/N')
+                search_page.continue_searching(should_continue, driver, df)
+                job_location = 'not listed'
+
         # Get Company name
         try:
             company = driver.find_element_by_xpath('//*[starts-with(@class, "jobsearch-InlineCompanyRating")]').text.splitlines()[0]
         except IndexError:
             company = 'not listed'
+        except NoSuchElementException:
+            should_continue = input('Unable to find company name. Should I continue? Y/N')
+            search_page.continue_searching(should_continue, driver, df)
 
         # get job title
         try:
             job_title = driver.find_element_by_class_name('jobsearch-JobInfoHeader-title-container').text.splitlines()[0]
         except IndexError:
             job_title = "not listed"
+        except NoSuchElementException:
+            should_continue = input('Unable to find company name. Should I continue? Y/N')
+            search_page.continue_searching(should_continue, driver, df)
 
         # get the rest of job details
         job_details = []
-        for jobs in driver.find_elements_by_xpath('//*[starts-with(@id,"jobDetailsSection")]'):
-            job_details.append(jobs.text)
+        try:
+            for jobs in driver.find_elements_by_xpath('//*[starts-with(@id,"jobDetailsSection")]'):
+                job_details.append(jobs.text)
+        except Exception:
+            should_continue = input('Should I continue? Y/N')
+            search_page.continue_searching(should_continue, driver, df)
+
         try:
             job_details = job_details[0].splitlines()
         except IndexError:
             pass
+        except NoSuchElementException:
+            should_continue = input('Unable to find company name. Should I continue? Y/N')
+            search_page.continue_searching(should_continue, driver, df)
 
         # get salary
         try:
@@ -103,10 +155,19 @@ while pages_searched < pages_to_search:
             job_type = 'not included'
 
         # get job description
-        description = driver.find_element_by_class_name('jobsearch-jobDescriptionText').text
-
+        try:
+            description = driver.find_element_by_class_name('jobsearch-jobDescriptionText').text
+        except Exception:
+            should_continue = input('Should I continue? Y/N')
+            search_page.continue_searching(should_continue, driver, df)
+        
         # Date Posted
-        d_posted_days = re.findall('[0-9]+', driver.find_element_by_class_name('jobsearch-JobMetadataFooter').text)
+        try:
+            d_posted_days = re.findall('[0-9]+', driver.find_element_by_class_name('jobsearch-JobMetadataFooter').text)
+        except Exception:
+            should_continue = input('Should I continue? Y/N')
+            search_page.continue_searching(should_continue, driver, df)
+        
         try:
             days_posted_int = int((''.join(d_posted_days)))
         except ValueError:
@@ -117,9 +178,10 @@ while pages_searched < pages_to_search:
         driver.switch_to.default_content()
 
         # move job details to DataFrame
+        print(f'storing data...', end='')
         df.loc[len(df.index)] = [job_title, company, job_location, job_type, URL, salary, description,
                                     date_posted, search_query, location, job_type_query, datetime.today().strftime('%d %m %Y')]
-        
+        print('done.')
         current_listing += 1
     
     print(f'Finished searching {pages_searched + 1}')
@@ -127,5 +189,20 @@ while pages_searched < pages_to_search:
     url = userinput.create_url(job_type_query, location, search_query, pages_to_search)
     driver.get(url)
 
+print('Finished searching. Quitting Chrome.')
 driver.quit()
-df.to_csv('jobs.csv', mode='a', header=False, index=False)   
+# if not os.path.isfile(f'{search_query}_jobs.csv'):
+#     df.to_csv(f'{search_query}_jobs.csv', mode='a', header=False, index=False)   
+# else:
+#     df.to_csv(f'')
+
+for i in range(50):
+    filename = search_query + "_" + job_type_query + "_" + location + str(i) + '.csv'
+    if not os.path.isfile(filename):
+        break
+    elif i == 50:
+        filename = input('What do you want to name this file?')
+        break
+
+print(f'Moving data to {filename}: ')
+df.to_csv(filename)
